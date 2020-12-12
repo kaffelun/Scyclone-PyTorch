@@ -5,12 +5,12 @@ import torch.nn as nn
 
 
 class ResidualBlock_G(nn.Module):
-    def __init__(self, C: int, slope: float):
+    def __init__(self, C: int, slope: float, kernel: int = 5):
         super().__init__()
 
         # params
         ## "residual blocks consisting of two convolutional layers with a kernel size five" from Scyclone paper
-        kernel: int = 5
+        # kernel: int = 5
 
         # blocks
         self.conv_block = nn.Sequential(
@@ -28,14 +28,15 @@ class Generator(nn.Module):
     Scyclone Generator
     """
 
-    def __init__(self):
+    def __init__(self, args):
         super().__init__()
 
         # params
-        n_C_freq: int = 128
-        n_C_trunk: int = 256
+        n_C_freq: int = args.freq_channels
+        n_C_trunk: int = args.trunk_channels
         ## "In this study, we set nG and nD to 7 and 6, respectively" from Scyclone paper
-        n_ResBlock_G: int = 7
+        n_ResBlock_G: int = args.n_resblock_g
+        kernel_G: int = args.kernel_g
         slope: float = 0.01
 
         # channel adjustment with pointwiseConv
@@ -45,7 +46,7 @@ class Generator(nn.Module):
             nn.LeakyReLU(slope),
         ]
         # Residual blocks
-        blocks += [ResidualBlock_G(n_C_trunk, slope) for _ in range(n_ResBlock_G)]
+        blocks += [ResidualBlock_G(n_C_trunk, slope, kernel_G) for _ in range(n_ResBlock_G)]
         # channel adjustment with pointwiseConv
         blocks += [
             nn.Conv1d(n_C_trunk, n_C_freq, 1),
@@ -60,12 +61,12 @@ class Generator(nn.Module):
 
 
 class ResidualSNBlock_D(nn.Module):
-    def __init__(self, C: int, slope: float):
+    def __init__(self, C: int, slope: float, kernel: int = 5):
         super().__init__()
 
         # params
         ## "residual blocks consisting of two convolutional layers with a kernel size five" from Scyclone paper
-        kernel = 5
+        # kernel = 5
 
         # blocks
         self.conv_blocks = nn.Sequential(
@@ -86,17 +87,18 @@ class Discriminator(nn.Module):
     Scyclone Discriminator
     """
 
-    def __init__(self, noise_sigma: float = 0.01):
+    def __init__(self, args, noise_sigma: float = 0.01):
         super().__init__()
 
         # params
-        n_C_freq: int = 128
-        n_C_trunk: int = 256
+        n_C_freq: int = args.freq_channels
+        n_C_trunk: int = args.trunk_channels
         ## "In this study, we set nG and nD to 7 and 6, respectively" from Scyclone paper
-        n_ResBlock_D: int = 6
+        n_ResBlock_D: int = args.n_resblock_d
+        kernel_D: int = args.kernel_d
         slope: float = 0.2
 
-        self._noise_sigma = noise_sigma
+        self._noise_sigma = args.noise_sigma_d
         self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         # channel adjustment with pointwiseConv
         ## "We used leaky rectified linear units" from Scyclone paper
@@ -106,7 +108,7 @@ class Discriminator(nn.Module):
         ]
 
         # Residual blocks
-        blocks += [ResidualSNBlock_D(n_C_trunk, slope) for _ in range(n_ResBlock_D)]
+        blocks += [ResidualSNBlock_D(n_C_trunk, slope, kernel_D) for _ in range(n_ResBlock_D)]
 
         # final compression
         blocks += [

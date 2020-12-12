@@ -1,12 +1,16 @@
 from typing import NamedTuple
+from munch import Munch
+
 import torch
 from torch.tensor import Tensor
 from torch.utils.data import Dataset
 from torch.utils.data import random_split, DataLoader
 from pytorch_lightning import LightningDataModule
+import torchaudio
+import soundfile
 
 # currently there is no stub in npvcc2016
-from npvcc2016.PyTorch.dataset.spectrogram import NpVCC2016_spec  # type: ignore
+# from npvcc2016.PyTorch.dataset.spectrogram import NpVCC2016_spec  # type: ignore
 
 
 class DataLoaderPerformance(NamedTuple):
@@ -19,32 +23,36 @@ class DataLoaderPerformance(NamedTuple):
     pin_memory: bool
 
 
-class NonParallelSpecDataModule(LightningDataModule):
+class ScycloneDataModule(LightningDataModule):
     def __init__(
         self,
+        args,
         batch_size: int = 64,
         performance: DataLoaderPerformance = DataLoaderPerformance(4, True),
     ):
         super().__init__()
         self.batch_size = batch_size
+        self.args = Munch(args)
         self._num_worker = performance.num_workers
         self._pin_memory = performance.pin_memory
 
     def prepare_data(self, *args, **kwargs) -> None:
-        NonParallelSpecDataset(train=True)
+        ScycloneDataset(train=True)
 
     def setup(self, stage=None):
+        args = self.args
+
+        with open(args.training_list, "r") as f:
+            data_list_train = f.readlines()
+        with open(args.validation_list, "r") as f:
+            data_list_val = f.readlines()
+
         if stage == "fit" or stage is None:
-            dataset_full = NonParallelSpecDataset(train=True)
-            # use modulo for validation (#training become batch*N)
-            n_full = len(dataset_full)
-            mod = n_full % self.batch_size
-            self.dataset_train, self.dataset_val = random_split(
-                dataset_full, [n_full - mod, mod]
-            )
-            self.batch_size_val = mod
+            self.dataset_train = ScycloneDataset(data_list_train, args, train=True)
+            self.dataset_val = ScycloneDataset(data_list_val, args, train=True)
+            self.batch_size_val = len(self.dataset_val)
         if stage == "test" or stage is None:
-            self.dataset_test = NonParallelSpecDataset(train=False)
+            self.dataset_test = ScycloneDataset(data_list_test, args, train=False)
             self.batch_size_test = self.batch_size
 
     def train_dataloader(self):
@@ -88,7 +96,7 @@ def pad_last_dim(d: Tensor, length_min: int = 160) -> Tensor:
         return d
 
 
-def slice_last_dim(d: Tensor, length: int = 160) -> Tensor:
+def slice_last_dim(d: Tensor, length: int) -> Tensor:
     """
     Slice last dimention if length is too much.
     If input is shorter than `length`, error is thrown.
@@ -98,28 +106,37 @@ def slice_last_dim(d: Tensor, length: int = 160) -> Tensor:
     return torch.narrow(d, -1, start, length)
 
 
-def pad_clip(d: Tensor) -> Tensor:
-    return slice_last_dim(pad_last_dim(d))
+def pad_clip(d: Tensor, length: int = 160) -> Tensor:
+    return slice_last_dim(pad_last_dim(d, length), length)
+
+def get_spec(wave: Tensor, n_fft: int, hop_length: int):
+    return torchaudio.transforms.Spectrogram(n_fft, n_fft, hop_length)(wave)
 
 
-class NonParallelSpecDataset(Dataset):
-    def __init__(self, train: bool):
-        self.datasetA = NpVCC2016_spec(".", train, True, ["SF1"], pad_clip, True)
-        self.datasetB = NpVCC2016_spec(".", train, True, ["TF2"], pad_clip, True)
+class ScycloneDataset(Dataset):
+    def __init__(self, data_list="", args, train: bool = True):
+        self.n_class = 2
+        self.n_fft = args.n_fft
+        self.hop_length = args.hop_length
+        self.frame_length = args.frame_length
+        # {jvs_path}|{jsss_path}
+        self.data_list = [l[:-1].split('|') for l in data_list]
 
     def __getitem__(self, n: int):
-        """Load the n-th sample from the dataset.
-        Potential problem: A/B pair
-        Current implementation yield fixed A/B pair.
-        When batch size is small (e.g. 1), Batch_A and Batch_B has strong correlation.
-        If big batch, correlation decrease so little problem.
-        We could solve this problem through sampler (e.g. sampler + sampler reset).
-        """
-        # ignore label
-        return (self.datasetA[n][0], self.datasetB[n][0])
-
+        path_a, path_b = self.data_list[n]
+        wave_a = self._load_tensor(path_a)
+        spec_a = get_spec(wave_a, self.n_fft, self.hop_length)
+        wave_b = self._load_tensor(path_b)
+        spec_b = get_spec(wave_b, self.n_fft, self.hop_length)
+        return pad_clip(spec_a, self.frame_length), pad_clip(spec_b, self.frame_length)
+    
     def __len__(self) -> int:
-        return min(len(self.datasetA), len(self.datasetB))
+        return len(self.data_list)
+
+    def _load_tensor(self, path):
+        wave, sr = soundfile.read(path)
+        wave_tensor = torch.from_numpy(wave).float()
+        return wave_tensor
 
 
 if __name__ == "__main__":

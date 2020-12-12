@@ -1,0 +1,38 @@
+log_dir: "logs/test"
+seed: 1234
+pretrained_model: ""
+max_epochs: 10000
+checkpoint_period: 5
+validation_period: 2
+use_amp: false
+device: "cuda"
+n_gpus: 1
+n_tpus: 0
+
+dataset:
+  training_list: "filelists/wavernn_train.txt"
+  validation_list: "filelists/wavernn_val.txt"
+  batch_size: 30
+  batch_size_val: 24
+  n_fft: 254
+  n_bins: 128
+  hop_length: 128
+  n_frames: 8
+  train_seq_len: 48
+  val_seq_len: 256
+  sr: 16000
+  num_workers: 2
+  pin_memory: false
+
+model:
+  base_channels: 1024
+  hidden_channels: 64
+  n_bins: 128
+  n_frames: 8
+
+optimizer:
+  lr: 1.0e-3
+  decay_rate: 0.5
+  decay_iter: [50000, 100000, 150000, ]
+
+use_profiler: false

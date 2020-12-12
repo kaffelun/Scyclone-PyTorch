@@ -1,0 +1,44 @@
+
+log_dir: "logs/test"
+seed: 1234
+pretrained_model: ""
+batch_size: 64
+max_epochs: 100
+ckpt_period: 60
+val_period: 10
+use_amp: true
+device: "tpu"
+n_gpus: 0
+n_tpus: 8
+
+use_profiler: false
+
+dataset:
+  load_from_disk: true
+  training_list: "filelists/jsut_jsss_train.txt"
+  validation_list: "filelists/jsut_jsss_val.txt"
+  n_fft: 254
+  ### n_bins * 2 + 2 = n_fft
+  # n_bins: 128
+  hop_length: 128
+  sr: 24000
+  num_workers: 2
+  pin_memory: false
+
+
+
+model:
+  # trunk_channels: 256
+  # n_resblk_g: 7
+
+  # dim_in_d: 128
+  noise_sigma_d: 0.01
+  # n_resblk_d: 6
+
+critic:
+  hinge_offset: 0.5
+  lambda_cyc: 10
+  lambda_id: 1
+
+optimizer:
+  lr: 2.0e-4

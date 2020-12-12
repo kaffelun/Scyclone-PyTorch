@@ -1,25 +1,19 @@
-import os
-from typing import Optional, Tuple, NamedTuple, Union
+from typing import Tuple
 import itertools
-from argparse import ArgumentParser, Namespace
 
 import torch
 from torch.nn import functional as F
 from torch.tensor import Tensor
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
+
 import pytorch_lightning as pl
-from pytorch_lightning import loggers as pl_loggers
-from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.profiler import AdvancedProfiler
 from pytorch_lightning.core.datamodule import LightningDataModule
 
 # currently there is no stub in npvcc2016
 from torchaudio.transforms import GriffinLim  # type: ignore
 
-from .datamodule import DataLoaderPerformance, NonParallelSpecDataModule
-from .modules import Generator, Discriminator
-from .args import parseArgments
+from modules import Generator, Discriminator
 
 
 # G: Generator
@@ -27,33 +21,23 @@ from .args import parseArgments
 # X2Y: map X to Y (e.g. B2A)
 
 
-class Scyclone(pl.LightningModule):
+class ScycloneTrainer(pl.LightningModule):
     """
     Scyclone, non-parallel voice conversion model.
     Origin: Masaya Tanaka, et al.. (2020). Scyclone: High-Quality and Parallel-Data-Free Voice Conversion Using Spectrogram and Cycle-Consistent Adversarial Networks. Arxiv 2005.03334.
     """
 
-    def __init__(self, noiseless_D: bool = False):
+    def __init__(self, args):
         super().__init__()
-
-        # params
-        self.hparams = {
-            ## "λcy and λid were set to 10 and 1 in Eq. 1" in Scyclone paper
-            ## self.weight_adv = 1 ## standard
-            "weight_cycle": 10,
-            "weight_identity": 1,
-            ## "m is a parameter of the hinge loss and is set to (...) 0.5 in our experiments" in Scyclone paper
-            "hinge_offset_D": 0.5,
-            "learning_rate": 2.0 * 1e-4,
-        }
+        self.args = args
         self.save_hyperparameters()
 
-        self.G_A2B = Generator()
-        self.G_B2A = Generator()
-        self.D_A = Discriminator(noise_sigma=0 if noiseless_D else 0.01)
-        self.D_B = Discriminator(noise_sigma=0 if noiseless_D else 0.01)
+        self.G_A2B = Generator(args.model)
+        self.G_B2A = Generator(args.model)
+        self.D_A = Discriminator(args.model)
+        self.D_B = Discriminator(args.model)
 
-        self.griffinLim = GriffinLim(n_fft=254, n_iter=256)
+        self.griffinLim = GriffinLim(n_fft=args.dataset.n_fft, n_iter=256)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.G_A2B(x)
@@ -61,6 +45,7 @@ class Scyclone(pl.LightningModule):
     def training_step(
         self, batch: Tuple[Tensor, Tensor], batch_idx: int, optimizer_idx: int
     ):
+        critic_args = self.args.critic
         """
         Min-Max adversarial training (G:D = 1:1)
         """
@@ -92,26 +77,26 @@ class Scyclone(pl.LightningModule):
             loss_G = (
                 loss_adv_G_A2B
                 + loss_adv_G_B2A
-                + loss_cycle_ABA * self.hparams["weight_cycle"]
-                + loss_cycle_BAB * self.hparams["weight_cycle"]
-                + loss_identity_A * self.hparams["weight_identity"]
-                + loss_identity_B * self.hparams["weight_identity"]
+                + loss_cycle_ABA * critic_args.lambda_cyc
+                + loss_cycle_BAB * critic_args.lambda_cyc
+                + loss_identity_A * critic_args.lambda_id
+                + loss_identity_B * critic_args.lambda_id
             )
 
             log = {
                 "Loss/G_total": loss_G,
                 "Loss/Adv/G_B2A": loss_adv_G_B2A,
                 "Loss/Adv/G_A2B": loss_adv_G_A2B,
-                "Loss/Cyc/A2B2A": loss_cycle_ABA * self.hparams["weight_cycle"],
-                "Loss/Cyc/B2A2B": loss_cycle_BAB * self.hparams["weight_cycle"],
-                "Loss/Id/A2A": loss_identity_A * self.hparams["weight_identity"],
-                "Loss/Id/B2B": loss_identity_B * self.hparams["weight_identity"],
+                "Loss/Cyc/A2B2A": loss_cycle_ABA * critic_args.lambda_cyc,
+                "Loss/Cyc/B2A2B": loss_cycle_BAB * critic_args.lambda_cyc,
+                "Loss/Id/A2A": loss_identity_A * critic_args.lambda_id,
+                "Loss/Id/B2B": loss_identity_B * critic_args.lambda_id,
             }
             out = {"loss": loss_G, "log_losses": log}
 
         # Discriminator training
         elif optimizer_idx == 1:
-            m = self.hparams["hinge_offset_D"]
+            m = critic_args.hinge_offset
 
             # Adversarial loss: hinge loss (from Scyclone paper eq.1)
             # D_A
@@ -148,7 +133,7 @@ class Scyclone(pl.LightningModule):
             out = {"loss": loss_D, "log_losses": log}
 
         else:
-            raise ValueError(f"invarid optimizer_idx: {optimizer_idx}")
+            raise ValueError(f"invalid optimizer_idx: {optimizer_idx}")
         return out
 
     def training_step_end(self, out):
@@ -187,7 +172,7 @@ class Scyclone(pl.LightningModule):
                 "Validation/A2B",
                 torch.reshape(a2b / scaler_a2b, (1, -1)),
                 global_step=self.current_epoch,
-                sample_rate=16000,
+                sample_rate=24000,
             )
             b2a = out["wave"]["Validation/B2A"][i]
             max_b2a = torch.max(b2a, 0, keepdim=True).values
@@ -197,7 +182,7 @@ class Scyclone(pl.LightningModule):
                 "Validation/B2A",
                 torch.reshape(b2a / scaler_b2a, (1, -1)),
                 global_step=self.current_epoch,
-                sample_rate=16000,
+                sample_rate=24000,
             )
         # loss logging
         for gd in ["G", "D"]:
@@ -211,11 +196,12 @@ class Scyclone(pl.LightningModule):
         """
         return G/D optimizers
         """
+        optimizer_args = self.optimizer_args
         decay_rate = 0.1
         decay_iter = 100000
         optim_G = Adam(
             itertools.chain(self.G_A2B.parameters(), self.G_B2A.parameters()),
-            lr=self.hparams["learning_rate"],
+            lr=optimizer_args.lr,
             betas=(0.5, 0.999),
         )
         sched_G = {
@@ -224,7 +210,7 @@ class Scyclone(pl.LightningModule):
         }
         optim_D = Adam(
             itertools.chain(self.D_A.parameters(), self.D_B.parameters()),
-            lr=self.hparams["learning_rate"],
+            lr=optimizer_args.lr,
             betas=(0.5, 0.999),
         )
         sched_D = {
@@ -233,97 +219,3 @@ class Scyclone(pl.LightningModule):
         }
         return [optim_G, optim_D], [sched_G, sched_D]
 
-
-def train(args_scpt: Namespace, datamodule: LightningDataModule) -> None:
-
-    ckptAndLogging = CheckpointAndLogging(
-        args_scpt.dir_root, args_scpt.name_exp, args_scpt.name_version
-    )
-    # setup
-    gpus: int = 1 if torch.cuda.is_available() else 0  # single GPU or CPU
-    model = Scyclone(args_scpt.noiseless_d)
-    ckpt_cb = ModelCheckpoint(
-        period=60, save_last=True, save_top_k=1, monitor="val_loss"
-    )
-    trainer = pl.Trainer(
-        gpus=gpus,
-        auto_select_gpus=True,
-        precision=32 if args_scpt.no_amp else 16,  # default AMP
-        max_epochs=args_scpt.max_epochs,
-        check_val_every_n_epoch=1500,  # about 1 validation per 10 min
-        # logging/checkpointing
-        resume_from_checkpoint=ckptAndLogging.resume_from_checkpoint,
-        default_root_dir=ckptAndLogging.default_root_dir,
-        checkpoint_callback=ckpt_cb,
-        logger=pl_loggers.TensorBoardLogger(
-            ckptAndLogging.save_dir, ckptAndLogging.name, ckptAndLogging.version
-        ),
-        # reload_dataloaders_every_epoch=True,
-        profiler=AdvancedProfiler() if args_scpt.profiler else None,
-    )
-
-    # training
-    trainer.fit(model, datamodule=datamodule)
-
-
-class CheckpointAndLogging:
-    """
-    Generate checkpoint & logging pathes.
-    {dir_root}/
-        {name_exp}/
-            {name_version}/
-                checkpoints/
-                    {name_ckpt} # PyTorch-Lightning Checkpoint. Resume from here.
-                hparams.yaml
-                events.out.tfevents.{xxxxyyyyzzzz} # TensorBoard log file.
-    """
-
-    # [PL's Trainer](https://pytorch-lightning.readthedocs.io/en/stable/trainer.html#trainer-class-api)
-    default_root_dir: Optional[str]
-    resume_from_checkpoint: Optional[str]
-    # [PL's TensorBoardLogger](https://pytorch-lightning.readthedocs.io/en/stable/logging.html#tensorboard)
-    save_dir: str
-    name: str
-    version: str
-    # [PL's ModelCheckpoint callback](https://pytorch-lightning.readthedocs.io/en/stable/generated/pytorch_lightning.callbacks.ModelCheckpoint.html#pytorch_lightning.callbacks.ModelCheckpoint)
-    # inferred from above two
-
-    def __init__(
-        self,
-        dir_root: str,
-        name_exp: str = "default",
-        name_version: str = "version_-1",
-        name_ckpt: str = "last.ckpt",
-    ) -> None:
-
-        # ModelCheckpoint
-        self.default_root_dir = dir_root
-        self.resume_from_checkpoint = os.path.join(
-            dir_root, name_exp, name_version, "checkpoints", name_ckpt
-        )
-        # TensorBoardLogger
-        self.save_dir = dir_root
-        self.name = name_exp
-        self.version = name_version
-
-
-def cli_main():
-
-    pl.seed_everything(1234)
-
-    # args
-    parser = ArgumentParser()
-    args_scpt = parseArgments(parser)  # args of Scyclone-Pytorch
-
-    # datamodule
-    loader_perf = DataLoaderPerformance(
-        args_scpt.num_workers, not args_scpt.no_pin_memory
-    )
-    datamodule = NonParallelSpecDataModule(64, loader_perf)
-
-    # train
-    train(args_scpt, datamodule)
-
-
-if __name__ == "__main__":  # pragma: no cover
-    cli_main()
