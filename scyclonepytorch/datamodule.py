@@ -37,7 +37,8 @@ class ScycloneDataModule(LightningDataModule):
         self._pin_memory = performance.pin_memory
 
     def prepare_data(self, *args, **kwargs) -> None:
-        ScycloneDataset(train=True)
+        # ScycloneDataset(train=True)
+        pass
 
     def setup(self, stage=None):
         args = self.args
@@ -114,7 +115,7 @@ def get_spec(wave: Tensor, n_fft: int, hop_length: int):
 
 
 class ScycloneDataset(Dataset):
-    def __init__(self, data_list="", args, train: bool = True):
+    def __init__(self, data_list, args, train: bool = True):
         self.n_class = 2
         self.n_fft = args.n_fft
         self.hop_length = args.hop_length

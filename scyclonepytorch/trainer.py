@@ -196,7 +196,7 @@ class ScycloneTrainer(pl.LightningModule):
         """
         return G/D optimizers
         """
-        optimizer_args = self.optimizer_args
+        optimizer_args = self.args.optimizer
         decay_rate = 0.1
         decay_iter = 100000
         optim_G = Adam(

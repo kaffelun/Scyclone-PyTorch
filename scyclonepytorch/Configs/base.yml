@@ -1,0 +1,50 @@
+
+log_dir: "logs/test"
+seed: 7354
+pretrained_model: ""
+batch_size: 64
+max_epochs: 10000
+ckpt_period: 25
+val_period: 10
+use_amp: false
+device: "cpu"
+n_gpus: 0
+n_tpus: 0
+
+use_profiler: false
+
+dataset:
+  load_from_disk: true
+  training_list: "filelists/jsut_jsss_train.txt"
+  validation_list: "filelists/jsut_jsss_val.txt"
+  n_bins: 128
+  n_fft: 254
+  # WaveRNN requires hop_length == n_bins
+  hop_length: 128
+  frame_length: 192
+  n_frames: 160
+  sr: 24000
+  num_workers: 2
+  pin_memory: false
+
+
+
+model:
+  # dim_in_d: 128
+  freq_channels: 128
+  trunk_channels: 256
+  
+  n_resblock_g: 7
+  kernel_g: 5
+
+  noise_sigma_d: 0.01
+  n_resblock_d: 6
+  kernel_d: 5
+
+critic:
+  hinge_offset: 0.5
+  lambda_cyc: 10
+  lambda_id: 1
+
+optimizer:
+  lr: 2.0e-4
